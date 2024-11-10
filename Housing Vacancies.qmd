@@ -1,0 +1,416 @@
+---
+title: "Housing Vacancies"
+format: html
+editor: visual
+---
+
+## Loading packages
+
+```{r}
+library(tidyverse)
+library(tidycensus)
+library(sf)
+library(cartography)
+library(devtools)
+library(spikemap)
+```
+
+## Getting ACS census data.
+
+```{r}
+census_api_key(Sys.getenv("CENSUS_API_KEY"))
+options(tigris_use_cache = TRUE)
+```
+
+Finding the variables that I want to use..
+
+```{r}
+v2022 <- load_variables(2022, "acs5",
+                        cache = TRUE)
+
+v2020 <- load_variables(2020, "acs5",
+                        cache = TRUE)
+```
+
+```{r}
+specific_vars <- v2020 %>% filter(name %in% c("B25001_001", "B25004_001", "B25004_002"))
+print(specific_vars)
+```
+
+| Variable   | Description                      | Col3      |
+|------------|----------------------------------|-----------|
+| B25001_001 | Housing Units                    | 2022 ACS5 |
+| B25002_002 | Occupied (both renter and owner) | 2022 ACS5 |
+| B25002_003 | Vacant                           | 2022 ACS5 |
+|            |                                  |           |
+|            |                                  |           |
+
+```{r}
+housing_vacancies_2020 <- get_acs(geography = "metropolitan statistical area/micropolitan statistical area",
+         variables = c("B25001_001", "B25002_002","B25002_003"),
+                       year=2020,
+                       output = "tidy",
+                       geometry = TRUE,
+         )
+```
+
+Pivoting wider and renaming variables
+
+```{r}
+housing_vacancies_2020_pivoted <- housing_vacancies_2020 |>
+  pivot_wider(names_from = variable, values_from = c(estimate, moe)) |>
+  st_as_sf()
+
+
+```
+
+```{r}
+housing_vacancies_2020_pivoted <- housing_vacancies_2020_pivoted|>
+  as_tibble()|>
+  rename(total_housing_e= estimate_B25001_001,
+         occupied_housing_e= estimate_B25002_002,
+         vacant_housing_e= estimate_B25002_003,
+         total_housing_moe= moe_B25001_001,
+         occupied_housing_moe= moe_B25001_001,
+         vacant_housing_moe= moe_B25001_001) 
+```
+
+```{r}
+names(housing_vacancies_2020_pivoted)
+```
+
+## Loading domestic migration data
+
+```{r}
+migration_2016_2020 <- read_csv("raw_data/MSA_Migration.csv") |>
+  rename(MSA_current = `Metropolitan Statistical Area of Current Residence`)
+```
+
+### Joining vacancies with migration data on MSA name.
+
+Adding percent vacant and per capita
+
+```{r}
+housing_vacancy_migration_merged <- housing_vacancies_2020_pivoted |>
+  left_join(migration_2016_2020, 
+            by =c("NAME"= "MSA_current"),
+            relationship = "many-to-many") |>
+  na.omit() |>
+  rename_with(~ gsub("Metropolitan Statistical Area","MSA", .)) |>
+  mutate(percent_vacant = vacant_housing_e/ total_housing_e,
+         percent_vacant_per_capita = percent_vacant /`Population 1 Year and Over Estimate` )
+
+```
+
+Writing out to CSV
+
+```{r}
+housing_vacancy_migration_merged %>% names()
+
+housing_vacancy_migration_merged_df <- st_as_sf(housing_vacancy_migration_merged) |> st_drop_geometry()
+
+write_csv(housing_vacancy_migration_merged_df, "clean_data/housing_vacancy_migration_merged_df.csv")
+```
+
+## Making a new extract for spikemap in Tableau
+
+```{r}
+housing_vacancy_filtered <- housing_vacancy_migration_merged |>
+  select(GEOID, 
+         NAME,
+         total_housing_e,
+         occupied_housing_e,
+         vacant_housing_e,
+         `Current Residence Metro Code1`,
+         `Population 1 Year and Over Estimate`,
+         `Movers from Different MSA2 Estimate`,
+         `Movers from Elsewhere in the U.S. or Puerto Rico Estimate`,
+         `Movers from Abroad3 Estimate`,
+         `Residence 1 Year Ago Metro Code1`,
+         `MSA of Residence 1 Year Ago`,
+         `Movers in Metro-to-Metro Flow Estimate`,
+         geometry)|>
+  rename( current_metrocode = `Current Residence Metro Code1`,
+          current_population = `Population 1 Year and Over Estimate`,
+          msa_movers_total = `Movers from Different MSA2 Estimate`,
+          other_movers_total = `Movers from Elsewhere in the U.S. or Puerto Rico Estimate`,
+          abroad_movers = `Movers from Abroad3 Estimate`,
+          previous_metrocode = `Residence 1 Year Ago Metro Code1`,
+          previous_msa_name = `MSA of Residence 1 Year Ago`,
+          previous_msa_movers = `Movers in Metro-to-Metro Flow Estimate`)
+
+```
+
+```{r}
+str(housing_vacancy_filtered)
+```
+
+## Moving below msa_names_sf creation
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+## Converting to an sf object
+
+```{r}
+housing_vacancy_migration_merged_sf <- st_as_sf(housing_vacancy_migration_merged)
+```
+
+## Changing column names to fit in the ESRI shapefile.
+
+```{r}
+
+housing_full_sf <- housing_vacancy_migration_merged_sf |>
+  rename(t_house_e = total_housing_e,
+         o_house_e = occupied_housing_e,
+         v_house_e = vacant_housing_e,
+         t_house_m = vacant_housing_moe,
+         o_house_m = moe_B25002_002,
+         v_house_m = moe_B25002_003,
+         cur_msa = `Current Residence Metro Code1`,
+         prev_msa  = `Residence 1 Year Ago Metro Code1`,
+         pop_e = `Population 1 Year and Over Estimate`,
+         pop_m = `Population 1 Year and Over MOE`,
+         no_mov_e = `Nonmovers Estimate`,
+         no_mov_m = `Nonmovers MOE`,
+         same_mov_e = `Movers within Same MSA Estimate`,
+         same_mov_m = `Movers within Same MSA MOE`,
+         diff_mov_e = `Movers from Different MSA2 Estimate`,
+         diff_mov_m = `Movers from Different MSA2 MOE`,
+         else_mov_e = `Movers from Elsewhere in the U.S. or Puerto Rico Estimate`,
+         else_mov_m = `Movers from Elsewhere in the U.S. or Puerto Rico MOE`,
+         abroad_e = `Movers from Abroad3 Estimate`,
+         abroad_m = `Movers from Abroad3 MOE`,
+         msa_1year = `MSA of Residence 1 Year Ago`,
+         pop_1y_e = `Population 1 MSA of Residence 1 Year Ago Year and Over Estimate`,
+         pop_1y_m = `Population 1 Year and Over MOE`,
+         no_mov_1_e = `MSA of Residence 1 Year Ago Nonmovers Estimate`,
+         no_mov_1_m = `MSA of Residence 1 Year Ago Nonmovers MOE`,
+         same_1y_e = `MSA of Residence 1 Year Ago Movers within Same MSA Estimate`,
+         same_1y_m = `MSA of Residence 1 Year Ago Movers from Different MSA2 MOE`,
+         diff_1y_e = `MSA of Residence 1 Year Ago Movers from Different MSA2 Estimate`,
+         diff_1y_m = `MSA of Residence 1 Year Ago Movers from Different MSA2 MOE`,
+         else_1y_e = `MSA of Residence 1 Year Ago Movers to Elsewhere in the U.S. or Puerto Rico Estimate`,
+         else_1y_m = `MSA of Residence 1 Year Ago Movers to Elsewhere in the U.S. or Puerto Rico MOE`,
+         m2m_flo_e = `Movers in Metro-to-Metro Flow Estimate`,
+         m2m_flo_m = `Movers in Metro-to-Metro Flow MOE`,
+         perc_vac = percent_vacant,
+         perc_vac_c = percent_vacant_per_capita)
+```
+
+```{r}
+st_write(housing_full_sf, dsn = "shapefiles/housing_full_sf.shp", append = FALSE)
+
+```
+
+## Taking the geometry and the MSA name to create another dataframe.
+
+This geometry is for the current MSA names. I need to strip the geometry from this and move it over to the msa_1_year
+
+```{r}
+
+msa_names_sf <- housing_full_sf |> 
+  select(cur_msa, NAME, geometry)|>
+  mutate(centroid = st_centroid(geometry)) |>
+  mutate(coords = st_coordinates(centroid)) |>
+  mutate(longitude = coords[, 1],
+         latitude = coords[, 2]) |>
+  select(-coords) |>
+  unique()
+
+#msa_1y_sf msa_names_sf |> left_join(housing )
+
+```
+
+```{r}
+
+st_write(msa_names_sf, dsn = "shapefiles/msa_names_sf.shp", append=FALSE)
+```
+
+## Resuming creation of a Tableau dataframe
+
+```{r}
+housing_vacancy_for_tableau <- housing_vacancy_filtered |>
+  select(-geometry)|>
+  full_join(msa_names_sf |> select(-NAME), by = c( "previous_metrocode" = "cur_msa"))
+
+housing_vacancy_for_tableau 
+```
+
+## Adding points for spike map to use with polygons
+
+1.  Create a points column and replicate each data point three times.
+2.  Move the latitude by a scaled amount. How much? I can do this part in Tableau.
+
+```{r}
+housing_vacancy_for_tableau_df <- housing_vacancy_for_tableau |>
+  slice(rep(1:n(), each = 3))|>
+   group_by(previous_metrocode) |>
+  mutate(
+    point = rep(1:3, length.out = n())
+  )|>
+  select(-geometry)
+
+
+```
+
+Writing to CSV
+
+```{r}
+write_csv(housing_vacancy_for_tableau_df, "clean_data/housing_vacancy_for_tableau_df.csv")
+```
+
+Script to add the modified points. Attempting in Tableau
+
+```{r}
+# # Define a scaling factor for latitude modification
+# scale_factor <- 1.05
+# 
+# # Create three rows per point with modified longitude and latitude
+# new_data <- data %>%
+#   # Repeat each row 3 times
+#   slice(rep(1:n(), each = 3)) %>%
+#   # Add an index for each point (1, 2, 3)
+#   group_by(id) %>%
+#   mutate(
+#     point = rep(1:3, length.out = n()),
+#     modified_longitude = case_when(
+#       point == 1 ~ longitude + 0.02, # Shift longitude slightly for point 1
+#       point == 2 ~ longitude + 0.04, # Shift longitude slightly more for point 2
+#       point == 3 ~ longitude         # Keep original for point 3
+#     ),
+#     modified_latitude = case_when(
+#       point == 3 ~ latitude * scale_factor,  # Scale latitude for point 3
+#       TRUE ~ latitude                        # Keep original for other points
+#     )
+#   ) %>%
+#   ungroup()
+```
+
+## Plotting
+
+```{r}
+library(viridis)
+
+housing_full_sf |>
+  filter(GEOID == "10180")|>
+  filter(diff_1y_e >50000)|>
+  ggplot()+
+  geom_col(aes(x=fct_reorder(msa_1year, diff_1y_e),
+               y=diff_1y_e, 
+               fill=diff_1y_e),
+           color = "black",
+           width = 0.8,
+           size = 0.2)+
+  geom_errorbar(aes(x = fct_reorder(msa_1year, diff_1y_e), 
+                    ymin =  diff_1y_e- diff_1y_m,  # Lower limit
+                    ymax = diff_1y_e + diff_1y_m), # Upper limit
+                width = 0.4,  # Width of the error bars
+                color = "black", # Color of the error bars
+                size = 0.4) +  # Thickness of the error bars
+  geom_text(aes(x =msa_1year, 
+                y = diff_1y_e, 
+                label = scales::comma(diff_1y_e)), 
+            vjust = 0.5,
+            hjust = -0.5, 
+            size = 3.5) +  # Size of the text
+  scale_y_continuous(labels = scales::comma)+
+  scale_fill_viridis_c(option="G", direction = -1) +
+  labs(title= "Metro Migration Flow into Abilene, TX", x= NULL, y = NULL)+
+  theme_minimal()+
+  coord_flip()
+```
+
+```{r}
+#Basemap for NAD83
+us_states_sf <- st_read("shapefiles/cb_2023_us_state_500k/cb_2023_us_state_500k.shp")
+```
+
+```{r}
+names(msa_names_sf)
+
+```
+
+## Trying spikemap()
+
+```{r}
+ggplot() +
+  geom_sf(data = msa_names_sf)+
+spikemap(
+  msa_names_sf,
+  var= "m2m_flo_e",
+  inches = 0.5,
+  width = 0.02,
+  fixmax= 2,
+  col = "white",
+  border = "red",
+  lwd = 0.5,
+  legend.pos = "bottomleft",
+  legend.title.txt = var,
+  legend.title.cex = 0.8,
+  legend.values.cex = 0.6,
+  legend.values.rnd = 0,
+  add = TRUE
+)
+```
+
+```{r}
+ggplot() +
+  geom_sf(data = msa_names_sf)
+```
+
+```{r}
+
+```
+
+## Working with geom_segment().
+
+```{r}
+msa_bbox <- st_bbox(msa_names_sf)
+xmin= msa_bbox$xmin
+  xmax =msa_bbox$xmax
+  ymin = msa_bbox$ymin
+  ymax = msa_bbox$ymax
+
+msa_names_sf|>
+  filter(prev_msa == "19100")|> #filtering for movers to Dallas
+ggplot() +
+   geom_sf(data = us_states_sf, fill = "gray80", 
+           color = "black",
+           linewidth = 0.1) +
+  coord_sf(xlim = c(xmin, xmax), ylim = c(ymin, ymax))+
+  geom_segment(aes(x = st_coordinates(centroid)[, 1] - 0.2, #Meters: Since NAD83 is in meters, an offset of 0.02 would correspond to 0.02 meters, which is very small—essentially 2 centimeters.
+                   y = st_coordinates(centroid)[, 2], 
+                   xend = st_coordinates(centroid)[, 1], 
+                   yend = st_coordinates(centroid)[, 2] + (m2m_flo_e / max(m2m_flo_e)) * 5),
+               color = "red", size = 0.5, lineend = "round") +
+  geom_segment(aes(x = st_coordinates(centroid)[, 1] + 0.2, 
+                   y = st_coordinates(centroid)[, 2], 
+                   xend = st_coordinates(centroid)[, 1], 
+                   yend = st_coordinates(centroid)[, 2] + (m2m_flo_e / max(m2m_flo_e)) * 5),
+               color = "red", size = 0.5, lineend = "round") +
+  theme_minimal() +
+  labs(x= NULL,
+       y = NULL) +
+  theme(legend.position = "bottomleft",
+        legend.title = element_text(size = 8),
+        legend.text = element_text(size = 6))
+
+ggsave("charts/spikemap_large_2.png", 
+       plot = last_plot(),  
+       width = 12,          
+       height = 8,          
+       dpi = 300,
+       bg = "white")   
+```
+
+## Try another one with geom_polygon
