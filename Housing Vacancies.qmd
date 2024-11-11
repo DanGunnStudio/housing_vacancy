@@ -412,5 +412,3 @@ ggsave("charts/spikemap_large_2.png",
        dpi = 300,
        bg = "white")   
 ```
-
-## Try another one with geom_polygon
